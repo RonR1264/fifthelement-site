@@ -19,10 +19,12 @@
 #   FTP_SERVER_DIR  Map op de server, gezien vanuit de FTP-account.
 #                   Standaard de map waarin de FTP-account uitkomt.
 #
-# Uploaden gebeurt met lftp (FTPS met certificaatcontrole). Bestandsdatums
-# komen uit de git-geschiedenis, zodat na de eerste keer alleen gewijzigde
-# bestanden worden geüpload. Bestanden die uit de export verdwijnen worden
-# ook op de server verwijderd, behalve .htaccess, .well-known/ en cgi-bin/.
+# Uploaden gebeurt met lftp (FTPS met certificaatcontrole). Op de server staat
+# .static-push-manifest met een SHA-1 per bestand; daarmee worden na de eerste
+# keer alleen bestanden geüpload waarvan de inhoud echt veranderd is, en alleen
+# bestanden verwijderd die uit de export verdwenen zijn. De eerste keer (geen
+# manifest) wordt alles gespiegeld; .htaccess, .well-known/ en cgi-bin/ blijven
+# dan altijd staan.
 # Gebruik daarom een FTP-account die alleen in de map van deze site kan.
 
 name: Deploy via FTP
@@ -46,14 +48,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Hulpmiddelen en bestandsdatums
+      - name: lftp installeren
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq lftp git-restore-mtime > /dev/null
-          git restore-mtime public
+          sudo apt-get install -y -qq lftp > /dev/null
 
       - name: Export voorbereiden
         shell: bash
@@ -88,10 +87,6 @@ jobs:
           find _deploy -name '*.html' -print0 |
             xargs -0 perl -pi -e 's/<head(\s[^>]*)?>/$&<meta name="robots" content="noindex, nofollow">/i'
           printf 'User-agent: *\nDisallow: /\n' > _deploy/robots.txt
-          # Datums gelijk houden aan de export, anders lijkt alles gewijzigd.
-          (cd public && find . -type f -print0) | while IFS= read -r -d '' f; do
-            touch -r "public/$f" "_deploy/$f"
-          done
 
       - name: Upload via FTPS (lftp)
         shell: bash
@@ -102,20 +97,47 @@ jobs:
           TARGET_DIR: ${{ vars.FTP_SERVER_DIR || '.' }}
         run: |
           set -euo pipefail
-          lftp -c "
-            set cmd:fail-exit yes
-            set ftp:ssl-force true
-            set ftp:ssl-protect-data true
-            set ssl:verify-certificate true
-            set net:timeout 30
-            set net:max-retries 3
-            set net:reconnect-interval-base 5
-            set mirror:parallel-transfer-count 4
-            open --env-password -u '$FTP_USERNAME' 'ftp://$FTP_SERVER'
-            mirror --reverse --delete --only-newer --no-perms --verbose=1 \
-              --exclude-glob .htaccess \
-              --exclude-glob .well-known/ \
-              --exclude-glob cgi-bin/ \
-              --exclude-glob .ftp-deploy-sync-state.json \
-              _deploy/ '$TARGET_DIR'
-          "
+          MANIFEST=.static-push-manifest
+          SETTINGS="set cmd:fail-exit yes; set ftp:ssl-force true; set ftp:ssl-protect-data true;
+            set ssl:verify-certificate true; set net:timeout 30; set net:max-retries 3;
+            set net:reconnect-interval-base 5; set mirror:parallel-transfer-count 6"
+          OPEN="open --env-password -u '$FTP_USERNAME' 'ftp://$FTP_SERVER'"
+
+          # Vingerafdrukken van de nieuwe export.
+          (cd _deploy && find . -type f -print0 | sort -z | xargs -0 sha1sum | sed -E 's#^([0-9a-f]{40}) [ *]\./#\1  #') > new.manifest
+
+          # Manifest van de vorige deploy ophalen (bestaat niet bij de eerste keer).
+          if lftp -c "$SETTINGS; $OPEN; get '$TARGET_DIR/$MANIFEST' -o old.manifest" 2>/dev/null; then
+            # Alleen wat echt veranderd of verdwenen is.
+            comm -13 <(sort old.manifest) <(sort new.manifest) | cut -c43- > upload.txt
+            comm -23 <(cut -c43- old.manifest | sort) <(cut -c43- new.manifest | sort) > delete.txt
+            echo "Gewijzigd/nieuw: $(wc -l < upload.txt), te verwijderen: $(wc -l < delete.txt)"
+            {
+              echo "$SETTINGS"
+              echo "$OPEN"
+              while IFS= read -r f; do
+                d=$(dirname "$f")
+                [ "$d" != "." ] && echo "mkdir -p -f '$TARGET_DIR/$d'"
+                echo "put '_deploy/$f' -o '$TARGET_DIR/$f'"
+              done < upload.txt
+              while IFS= read -r f; do
+                echo "rm -f '$TARGET_DIR/$f'"
+              done < delete.txt
+              echo "put new.manifest -o '$TARGET_DIR/$MANIFEST'"
+            } > script.lftp
+            if [ -s upload.txt ] || [ -s delete.txt ]; then
+              lftp -f script.lftp
+            else
+              echo "Niets gewijzigd."
+            fi
+          else
+            echo "Geen manifest op de server: eerste volledige upload."
+            lftp -c "$SETTINGS; $OPEN
+              mirror --reverse --delete --no-perms --verbose=1 \
+                --exclude-glob .htaccess \
+                --exclude-glob .well-known/ \
+                --exclude-glob cgi-bin/ \
+                --exclude-glob $MANIFEST \
+                _deploy/ '$TARGET_DIR'
+              put new.manifest -o '$TARGET_DIR/$MANIFEST'"
+          fi
