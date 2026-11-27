@@ -2,7 +2,9 @@
 # Kopieer naar .github/workflows/deploy-ftp.yml in je repository.
 #
 # Secrets (Settings → Secrets and variables → Actions → Secrets):
-#   FTP_SERVER     bijv. ftp.fifthelement.nl
+#   FTP_SERVER     Hostnaam waarop het TLS-certificaat van de FTP-server
+#                  staat. Bij SiteGround de servernaam, bijv. c118233.sgvps.net
+#                  (te zien met: openssl s_client -starttls ftp -connect <domein>:21)
 #   FTP_USERNAME
 #   FTP_PASSWORD
 #
@@ -14,12 +16,13 @@
 #                   - Live: https://fifthelement.nl
 #                     → de export gaat ongewijzigd online.
 #                   Zolang SITE_URL leeg is, doet deze workflow niets.
-#   FTP_SERVER_DIR  Map op de server, gezien vanuit de FTP-account,
-#                   bijv. ./  (standaard) of ./public_html/
+#   FTP_SERVER_DIR  Map op de server, gezien vanuit de FTP-account.
+#                   Standaard de map waarin de FTP-account uitkomt.
 #
-# De action houdt op de server een statusbestand bij
-# (.ftp-deploy-sync-state.json) en uploadt daarna alleen wijzigingen.
-# Bestanden die uit de export verdwijnen, worden ook op de server verwijderd.
+# Uploaden gebeurt met lftp (FTPS met certificaatcontrole). Bestandsdatums
+# komen uit de git-geschiedenis, zodat na de eerste keer alleen gewijzigde
+# bestanden worden geüpload. Bestanden die uit de export verdwijnen worden
+# ook op de server verwijderd, behalve .htaccess, .well-known/ en cgi-bin/.
 # Gebruik daarom een FTP-account die alleen in de map van deze site kan.
 
 name: Deploy via FTP
@@ -43,6 +46,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Hulpmiddelen en bestandsdatums
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq lftp git-restore-mtime > /dev/null
+          git restore-mtime public
 
       - name: Export voorbereiden
         shell: bash
@@ -50,7 +61,7 @@ jobs:
           SITE_URL: ${{ vars.SITE_URL }}
         run: |
           set -euo pipefail
-          cp -r public _deploy
+          cp -a public _deploy
           if [ "${SITE_URL%/}" = "${LIVE_URL%/}" ]; then
             echo "Doel is de live site ($SITE_URL): export gaat ongewijzigd online."
             exit 0
@@ -77,13 +88,34 @@ jobs:
           find _deploy -name '*.html' -print0 |
             xargs -0 perl -pi -e 's/<head(\s[^>]*)?>/$&<meta name="robots" content="noindex, nofollow">/i'
           printf 'User-agent: *\nDisallow: /\n' > _deploy/robots.txt
+          # Datums gelijk houden aan de export, anders lijkt alles gewijzigd.
+          (cd public && find . -type f -print0) | while IFS= read -r -d '' f; do
+            touch -r "public/$f" "_deploy/$f"
+          done
 
-      - name: Upload via FTPS
-        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
-        with:
-          server: ${{ secrets.FTP_SERVER }}
-          username: ${{ secrets.FTP_USERNAME }}
-          password: ${{ secrets.FTP_PASSWORD }}
-          protocol: ftps
-          local-dir: ./_deploy/
-          server-dir: ${{ vars.FTP_SERVER_DIR || './' }}
+      - name: Upload via FTPS (lftp)
+        shell: bash
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          LFTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          TARGET_DIR: ${{ vars.FTP_SERVER_DIR || '.' }}
+        run: |
+          set -euo pipefail
+          lftp -c "
+            set cmd:fail-exit yes
+            set ftp:ssl-force true
+            set ftp:ssl-protect-data true
+            set ssl:verify-certificate true
+            set net:timeout 30
+            set net:max-retries 3
+            set net:reconnect-interval-base 5
+            set mirror:parallel-transfer-count 4
+            open --env-password -u '$FTP_USERNAME' 'ftp://$FTP_SERVER'
+            mirror --reverse --delete --only-newer --no-perms --verbose=1 \
+              --exclude-glob .htaccess \
+              --exclude-glob .well-known/ \
+              --exclude-glob cgi-bin/ \
+              --exclude-glob .ftp-deploy-sync-state.json \
+              _deploy/ '$TARGET_DIR'
+          "
