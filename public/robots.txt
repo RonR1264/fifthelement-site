@@ -1,0 +1,4 @@
+User-agent: *
+Disallow:
+
+Sitemap: https://fifthelement.nl/sitemap_index.xml
