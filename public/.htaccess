@@ -1,0 +1,19 @@
+Options -Indexes
+ErrorDocument 404 /404.html
+
+# Static Push: cache-instellingen
+<IfModule mod_headers.c>
+	<FilesMatch "\.(html?|xml|xsl|txt)$">
+		Header set Cache-Control "no-cache"
+		Header set X-Cache-Enabled "False"
+		Header unset Expires
+	</FilesMatch>
+	<FilesMatch "\.(woff2?|ttf|otf|eot)$">
+		Header set Cache-Control "public, max-age=31536000, immutable"
+		Header unset Expires
+	</FilesMatch>
+	<FilesMatch "\.(css|js|mjs|json|svg|png|jpe?g|gif|webp|avif|ico|bmp|webmanifest)$">
+		Header set Cache-Control "public, max-age=604800"
+		Header unset Expires
+	</FilesMatch>
+</IfModule>
