@@ -1,0 +1,89 @@
+# Zet de export uit public/ via FTPS op een webserver (bijv. SiteGround).
+# Kopieer naar .github/workflows/deploy-ftp.yml in je repository.
+#
+# Secrets (Settings → Secrets and variables → Actions → Secrets):
+#   FTP_SERVER     bijv. ftp.fifthelement.nl
+#   FTP_USERNAME
+#   FTP_PASSWORD
+#
+# Variables (zelfde pagina, tabblad Variables):
+#   SITE_URL        Adres waar de site komt te staan.
+#                   - Test, bijv. https://static.fifthelement.nl
+#                     → links worden omgezet naar dit adres, elke pagina krijgt
+#                       noindex en robots.txt blokkeert zoekmachines.
+#                   - Live: https://fifthelement.nl
+#                     → de export gaat ongewijzigd online.
+#                   Zolang SITE_URL leeg is, doet deze workflow niets.
+#   FTP_SERVER_DIR  Map op de server, gezien vanuit de FTP-account,
+#                   bijv. ./  (standaard) of ./public_html/
+#
+# De action houdt op de server een statusbestand bij
+# (.ftp-deploy-sync-state.json) en uploadt daarna alleen wijzigingen.
+# Bestanden die uit de export verdwijnen, worden ook op de server verwijderd.
+# Gebruik daarom een FTP-account die alleen in de map van deze site kan.
+
+name: Deploy via FTP
+
+on:
+  push:
+    branches: [main]
+    paths: ['public/**']
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-ftp
+  cancel-in-progress: false
+
+env:
+  LIVE_URL: https://fifthelement.nl
+
+jobs:
+  deploy:
+    if: ${{ vars.SITE_URL != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Export voorbereiden
+        shell: bash
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}
+        run: |
+          set -euo pipefail
+          cp -r public _deploy
+          if [ "${SITE_URL%/}" = "${LIVE_URL%/}" ]; then
+            echo "Doel is de live site ($SITE_URL): export gaat ongewijzigd online."
+            exit 0
+          fi
+          echo "Testdoel: $LIVE_URL -> $SITE_URL (met noindex)"
+          export PAGES_URL="$SITE_URL"
+          find _deploy -type f \( -name '*.html' -o -name '*.css' -o -name '*.js' -o -name '*.json' -o -name '*.xml' -o -name '*.txt' -o -name '*.svg' \) -print0 |
+            xargs -0 perl -pi -e '
+              BEGIN {
+                ($l = $ENV{LIVE_URL})  =~ s{/+$}{};
+                ($p = $ENV{PAGES_URL}) =~ s{/+$}{};
+                ($le = $l) =~ s{/}{\x5c/}g;   # https:\/\/...
+                ($pe = $p) =~ s{/}{\x5c/}g;
+                ($bp = $p) =~ s{^https?://[^/]+}{};
+              }
+              next if /rel=["\x27]canonical["\x27]/;
+              s/\Q$l\E/$p/g;
+              s/\Q$le\E/$pe/g;
+              if ($bp ne "") {
+                s{(\b(?:href|src|action|poster)=["\x27])/(?!/)}{$1$bp/}g;
+                s{(url\(["\x27]?)/(?!/)}{$1$bp/}g;
+              }
+            '
+          find _deploy -name '*.html' -print0 |
+            xargs -0 perl -pi -e 's/<head(\s[^>]*)?>/$&<meta name="robots" content="noindex, nofollow">/i'
+          printf 'User-agent: *\nDisallow: /\n' > _deploy/robots.txt
+
+      - name: Upload via FTPS
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ftps
+          local-dir: ./_deploy/
+          server-dir: ${{ vars.FTP_SERVER_DIR || './' }}
