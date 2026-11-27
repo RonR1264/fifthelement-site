@@ -57,10 +57,16 @@ jobs:
                 ($p = $ENV{PAGES_URL}) =~ s{/+$}{};
                 ($le = $l) =~ s{/}{\x5c/}g;   # https:\/\/...
                 ($pe = $p) =~ s{/}{\x5c/}g;
+                ($bp = $p) =~ s{^https?://[^/]+}{};   # /fifthelement-site
               }
               next if /rel=["\x27]canonical["\x27]/;
               s/\Q$l\E/$p/g;
               s/\Q$le\E/$pe/g;
+              # Links vanaf de root (href="/contact/") wijzen op Pages naar de verkeerde map.
+              if ($bp ne "") {
+                s{(\b(?:href|src|action|poster)=["\x27])/(?!/)}{$1$bp/}g;
+                s{(url\(["\x27]?)/(?!/)}{$1$bp/}g;
+              }
             '
           find _site -name '*.html' -print0 |
             xargs -0 perl -pi -e 's/<head(\s[^>]*)?>/$&<meta name="robots" content="noindex, nofollow">/i'
