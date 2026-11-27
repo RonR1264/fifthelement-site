@@ -1,0 +1,73 @@
+# TESTKOPIE op GitHub Pages (niet de live site).
+# Zet de export uit public/ op https://<eigenaar>.github.io/<repo>/ zodat je de
+# statische site op echte snelheid kunt bekijken.
+#
+# - Verwijzingen naar de live URL worden omgezet naar het Pages-adres
+#   (ook de JSON-variant met \/ die Elementor gebruikt).
+# - Canonical-links blijven naar de live site wijzen en elke pagina krijgt
+#   noindex, zodat zoekmachines de testkopie negeren.
+#
+# Kopieer naar .github/workflows/preview-pages.yml en zet in de repository
+# Settings → Pages → Source op "GitHub Actions".
+
+name: Testkopie op GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths: ['public/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  LIVE_URL: https://fifthelement.nl
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Live URL omzetten naar Pages-adres
+        shell: bash
+        env:
+          PAGES_URL: ${{ steps.pages.outputs.base_url }}
+        run: |
+          set -euo pipefail
+          cp -r public _site
+          echo "Omzetten: $LIVE_URL -> $PAGES_URL"
+          find _site -type f \( -name '*.html' -o -name '*.css' -o -name '*.js' -o -name '*.json' -o -name '*.xml' -o -name '*.txt' -o -name '*.svg' \) -print0 |
+            xargs -0 perl -pi -e '
+              BEGIN {
+                ($l = $ENV{LIVE_URL})  =~ s{/+$}{};
+                ($p = $ENV{PAGES_URL}) =~ s{/+$}{};
+                ($le = $l) =~ s{/}{\x5c/}g;   # https:\/\/...
+                ($pe = $p) =~ s{/}{\x5c/}g;
+              }
+              next if /rel=["\x27]canonical["\x27]/;
+              s/\Q$l\E/$p/g;
+              s/\Q$le\E/$pe/g;
+            '
+          find _site -name '*.html' -print0 |
+            xargs -0 perl -pi -e 's/<head(\s[^>]*)?>/$&<meta name="robots" content="noindex, nofollow">/i'
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
