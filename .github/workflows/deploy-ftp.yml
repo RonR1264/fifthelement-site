@@ -68,7 +68,7 @@ jobs:
           echo "Testdoel: $LIVE_URL -> $SITE_URL (met noindex)"
           export PAGES_URL="$SITE_URL"
           find _deploy -type f \( -name '*.html' -o -name '*.css' -o -name '*.js' -o -name '*.json' -o -name '*.xml' -o -name '*.txt' -o -name '*.svg' \) -print0 |
-            xargs -0 perl -pi -e '
+            xargs -0 perl -0777 -pi -e '
               BEGIN {
                 ($l = $ENV{LIVE_URL})  =~ s{/+$}{};
                 ($p = $ENV{PAGES_URL}) =~ s{/+$}{};
@@ -76,13 +76,17 @@ jobs:
                 ($pe = $p) =~ s{/}{\x5c/}g;
                 ($bp = $p) =~ s{^https?://[^/]+}{};
               }
-              next if /rel=["\x27]canonical["\x27]/;
+              # Canonical-links blijven naar de live site wijzen (per bestand,
+              # want verkleinde HTML staat vaak op een paar lange regels).
+              my @keep;
+              s{<link\b[^>]*\brel=["\x27]?canonical\b[^>]*>}{push @keep, $&; "\x00SPKEEP" . $#keep . "\x00"}ge;
               s/\Q$l\E/$p/g;
               s/\Q$le\E/$pe/g;
               if ($bp ne "") {
                 s{(\b(?:href|src|action|poster)=["\x27])/(?!/)}{$1$bp/}g;
                 s{(url\(["\x27]?)/(?!/)}{$1$bp/}g;
               }
+              s{\x00SPKEEP(\d+)\x00}{$keep[$1]}g;
             '
           find _deploy -name '*.html' -print0 |
             xargs -0 perl -pi -e 's/<head(\s[^>]*)?>/$&<meta name="robots" content="noindex, nofollow">/i'
