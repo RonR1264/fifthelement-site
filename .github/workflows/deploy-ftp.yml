@@ -115,7 +115,13 @@ jobs:
             # Alleen wat echt veranderd of verdwenen is.
             comm -13 <(sort old.manifest) <(sort new.manifest) | cut -c43- > upload.txt
             comm -23 <(cut -c43- old.manifest | sort) <(cut -c43- new.manifest | sort) > delete.txt
-            echo "Gewijzigd/nieuw: $(wc -l < upload.txt), te verwijderen: $(wc -l < delete.txt)"
+            # Mappen waarin na het verwijderen geen bestand uit de export meer staat
+            # (diepste eerst), zodat een verwijderde pagina 404 geeft en geen 403.
+            dirs() { awk -F/ '{p=""; for (i=1; i<NF; i++) { p = (i==1 ? $1 : p "/" $i); print p }}'; }
+            cut -c43- new.manifest | dirs | sort -u > keepdirs.txt
+            dirs < delete.txt | sort -u | comm -23 - keepdirs.txt |
+              awk -F/ '{print NF "\t" $0}' | sort -k1,1nr | cut -f2- > rmdirs.txt
+            echo "Gewijzigd/nieuw: $(wc -l < upload.txt), te verwijderen: $(wc -l < delete.txt), lege mappen: $(wc -l < rmdirs.txt)"
             {
               echo "$SETTINGS"
               echo "$OPEN"
@@ -127,6 +133,15 @@ jobs:
               while IFS= read -r f; do
                 echo "rm -f '$TARGET_DIR/$f'"
               done < delete.txt
+              # Staat er in een map toch nog iets anders (eigen bestanden), dan
+              # mislukt rmdir en blijft de map gewoon staan.
+              if [ -s rmdirs.txt ]; then
+                echo "set cmd:fail-exit no"
+                while IFS= read -r d; do
+                  echo "rmdir '$TARGET_DIR/$d'"
+                done < rmdirs.txt
+                echo "set cmd:fail-exit yes"
+              fi
               echo "put new.manifest -o '$TARGET_DIR/$MANIFEST'"
             } > script.lftp
             if [ -s upload.txt ] || [ -s delete.txt ]; then
