@@ -51,7 +51,7 @@ jobs:
           cp -r public _site
           echo "Omzetten: $LIVE_URL -> $PAGES_URL"
           find _site -type f \( -name '*.html' -o -name '*.css' -o -name '*.js' -o -name '*.json' -o -name '*.xml' -o -name '*.txt' -o -name '*.svg' \) -print0 |
-            xargs -0 perl -pi -e '
+            xargs -0 perl -0777 -pi -e '
               BEGIN {
                 ($l = $ENV{LIVE_URL})  =~ s{/+$}{};
                 ($p = $ENV{PAGES_URL}) =~ s{/+$}{};
@@ -59,7 +59,11 @@ jobs:
                 ($pe = $p) =~ s{/}{\x5c/}g;
                 ($bp = $p) =~ s{^https?://[^/]+}{};   # /fifthelement-site
               }
-              next if /rel=["\x27]canonical["\x27]/;
+              # Canonical-links blijven naar de live site wijzen: eerst apart
+              # zetten. Per bestand (-0777), want verkleinde HTML staat vaak
+              # op een paar lange regels.
+              my @keep;
+              s{<link\b[^>]*\brel=["\x27]?canonical\b[^>]*>}{push @keep, $&; "\x00SPKEEP" . $#keep . "\x00"}ge;
               s/\Q$l\E/$p/g;
               s/\Q$le\E/$pe/g;
               # Links vanaf de root (href="/contact/") wijzen op Pages naar de verkeerde map.
@@ -67,6 +71,7 @@ jobs:
                 s{(\b(?:href|src|action|poster)=["\x27])/(?!/)}{$1$bp/}g;
                 s{(url\(["\x27]?)/(?!/)}{$1$bp/}g;
               }
+              s{\x00SPKEEP(\d+)\x00}{$keep[$1]}g;
             '
           find _site -name '*.html' -print0 |
             xargs -0 perl -pi -e 's/<head(\s[^>]*)?>/$&<meta name="robots" content="noindex, nofollow">/i'
